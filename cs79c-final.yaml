@@ -22,14 +22,23 @@ Resources:
         - Key: Name
           Value: cs79c-vpc
 
-  # Public Subnet
+  # Public Subnets
   MySubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref MyVPC
       CidrBlock: 10.0.1.0/24
       MapPublicIpOnLaunch: true
-  
+      AvailabilityZone: 'us-west-2a' 
+
+  MySubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: 'us-west-2b'
+
 
   # Internet Gateway
   InternetGateway:
@@ -64,12 +73,20 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
-  # Associate Route Table with Public Subnet
+  # Associate Route Table with Public Subnets
   SubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref MySubnet
       RouteTableId: !Ref PublicRouteTable
+    
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MySubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+
 
   # Security Group - Allow HTTP
   WebServerSecurityGroup:
@@ -90,11 +107,12 @@ Resources:
   WebServer:
     Type: AWS::EC2::LaunchTemplate
     Properties:
-      InstanceType: !Ref InstanceType
-      ImageId: !Sub
-        - '{{resolve:ssm:${AmiParameter}}}'
-        - AmiParameter: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-      SubnetId: !Ref MySubnet
+      LaunchTemplateName: ServerTemplate
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        ImageId: !Sub
+          - '{{resolve:ssm:${AmiParameter}}}'
+          - AmiParameter: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
       SecurityGroupIds:
         - !Ref WebServerSecurityGroup
       UserData:
@@ -104,26 +122,60 @@ Resources:
           dnf install -y httpd
           systemctl enable --now httpd
           cat > /var/www/html/index.html <<'EOF'
-            <h1>Maryam Abbas</h1>
+            <h1>Maryam Abbas Final Project!</h1>
   
           EOF
       Tags:
         - Key: Name
           Value: WebServer
-  
- #ASG SOURCE: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/quickref-ec2-auto-scaling.html
+ #ASG
+ #SOURCE: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/quickref-ec2-auto-scaling.html
   myASG:
   Type: AWS::AutoScaling::AutoScalingGroup
   Properties:
     VPCZoneIdentifier:
       - !Ref MySubnet
-      - subnetIdAz2
-      - subnetIdAz3
+      - !Ref MySubnet2
+      
     LaunchTemplate:
-      LaunchTemplateId: !Ref myLaunchTemplate
-      Version: !GetAtt myLaunchTemplate.LatestVersionNumber
+      LaunchTemplateId: !Ref WebServer
+      Version: !GetAtt WebServer.LatestVersionNumber
     MaxSize: '4'
     MinSize: '1'
+
+#Cloudwatch configuration
+#SOURCE: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/quickref-cloudwatch.html#cloudwatch-sample-cpu-utilization-alarm
+CPUAlarm:
+  Type: AWS::CloudWatch::Alarm
+  Properties:
+    AlarmDescription: CPU alarm for my instance
+    AlarmActions:
+    - !Ref: "logical name of an AWS::SNS::Topic resource"
+    MetricName: CPUUtilization
+    Namespace: AWS/EC2
+    Statistic: Average
+    Period: '60'
+    EvaluationPeriods: '3'
+    Threshold: '90'
+    ComparisonOperator: GreaterThanThreshold
+    Dimensions:
+    - Name: InstanceId
+      Value: !Ref: "logical name of an AWS::EC2::Instance resource"
+    
+  
+  
+
+myTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: my-target-group
+      Protocol: TCP
+      Port: 80
+      TargetType: alb
+      VpcId: !Ref albVPC
+      Targets:
+        - Id: !Ref myALB
+          Port: 80
         
 
 Outputs:
