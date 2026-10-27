@@ -74,13 +74,13 @@ Resources:
       GatewayId: !Ref InternetGateway
 
   # Associate Route Table with Public Subnets
-  SubnetRouteTableAssociation:
+  SubnetRouteTableAssociation1:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref MySubnet
       RouteTableId: !Ref PublicRouteTable
     
-  SubnetRouteTableAssociation:
+  SubnetRouteTableAssociation2:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref MySubnet2
@@ -105,79 +105,95 @@ Resources:
 
   # LAUNCH TEMPLATE:
   WebServer:
-    Type: AWS::EC2::LaunchTemplate
+      Type: AWS::EC2::LaunchTemplate
+      Properties:
+        LaunchTemplateName: ServerTemplate
+        LaunchTemplateData:
+          InstanceType: !Ref InstanceType
+          ImageId: !Sub
+            - '{{resolve:ssm:${AmiParameter}}}'
+            - AmiParameter: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+          SecurityGroupIds:
+            - !Ref WebServerSecurityGroup
+          UserData:
+            Fn::Base64: !Sub |
+              #!/bin/bash
+              dnf update -y
+              dnf install -y httpd
+              systemctl enable --now httpd
+              echo '<h1>Maryam Abbas Final Project!</h1>' > /var/www/html/index.html
+          TagSpecifications:
+            - ResourceType: instance
+              Tags:
+                - Key: Name
+                  Value: WebServer
+
+
+
+#ALB:
+  myALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      LaunchTemplateName: ServerTemplate
-      LaunchTemplateData:
-        InstanceType: !Ref InstanceType
-        ImageId: !Sub
-          - '{{resolve:ssm:${AmiParameter}}}'
-          - AmiParameter: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-      SecurityGroupIds:
-        - !Ref WebServerSecurityGroup
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          dnf update -y
-          dnf install -y httpd
-          systemctl enable --now httpd
-          cat > /var/www/html/index.html <<'EOF'
-            <h1>Maryam Abbas Final Project!</h1>
-  
-          EOF
-      Tags:
-        - Key: Name
-          Value: WebServer
+      Name: my-application-load-balancer
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref MySubnet
+        - !Ref MySubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic to the load balancer
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref myALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref myTargetGroup
+ 
+ 
  #ASG
  #SOURCE: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/quickref-ec2-auto-scaling.html
   myASG:
-  Type: AWS::AutoScaling::AutoScalingGroup
-  Properties:
-    VPCZoneIdentifier:
-      - !Ref MySubnet
-      - !Ref MySubnet2
-      
-    LaunchTemplate:
-      LaunchTemplateId: !Ref WebServer
-      Version: !GetAtt WebServer.LatestVersionNumber
-    MaxSize: '4'
-    MinSize: '1'
-
-#Cloudwatch configuration
-#SOURCE: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/quickref-cloudwatch.html#cloudwatch-sample-cpu-utilization-alarm
-CPUAlarm:
-  Type: AWS::CloudWatch::Alarm
-  Properties:
-    AlarmDescription: CPU alarm for my instance
-    AlarmActions:
-    - !Ref: "logical name of an AWS::SNS::Topic resource"
-    MetricName: CPUUtilization
-    Namespace: AWS/EC2
-    Statistic: Average
-    Period: '60'
-    EvaluationPeriods: '3'
-    Threshold: '90'
-    ComparisonOperator: GreaterThanThreshold
-    Dimensions:
-    - Name: InstanceId
-      Value: !Ref: "logical name of an AWS::EC2::Instance resource"
-    
-  
-  
-
-myTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      Name: my-target-group
-      Protocol: TCP
-      Port: 80
-      TargetType: alb
-      VpcId: !Ref albVPC
-      Targets:
-        - Id: !Ref myALB
-          Port: 80
-        
+      VPCZoneIdentifier:
+        - !Ref MySubnet
+        - !Ref MySubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebServer
+        Version: !GetAtt WebServer.LatestVersionNumber
+      MaxSize: '4'
+      MinSize: '1'
+      
+
+
+  myTargetGroup:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        Name: my-target-group
+        Protocol: HTTP
+        Port: 80
+        TargetType: instance
+        VpcId: !Ref MyVPC
+        HealthCheckProtocol: HTTP
+        HealthCheckPath: /
 
 Outputs:
-  SiteURL:
-    Value: !Sub 'http://${WebServer.PublicDnsName}'
+    SiteURL:
+      Value: !Sub
+        - 'http://${LoadBalancerDNS}'
+        - LoadBalancerDNS: !GetAtt myALB.DNSName
